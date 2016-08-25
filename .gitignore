@@ -1,0 +1,6 @@
+*.pickle
+*.meta
+checkpoint
+.idea
+.DS_Store
+w2vy.txt
