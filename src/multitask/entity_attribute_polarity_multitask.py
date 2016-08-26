@@ -531,7 +531,7 @@ def train_task(CONST, data):
                 slot1_losses = slot1_losses + [np.mean(slot1_loss)]
                 slot3_losses = slot3_losses + [np.mean(slot3_loss)]
 
-                print("Epoch: %d Avg. Total Mean Loss slot1: %.6f slot3: %" % (i + 1,
+                print("Epoch: %d Avg. Total Mean Loss slot1: %.6f slot3: %.6f" % (i + 1,
                                                                                np.mean(slot1_losses),
                                                                                np.mean(slot3_losses)))
 

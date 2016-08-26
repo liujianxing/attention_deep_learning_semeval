@@ -1,4 +1,5 @@
 *.pickle
+*.png
 *.meta
 checkpoint
 .idea
