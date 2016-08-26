@@ -287,7 +287,7 @@ def semeval_itterator(x_data, y_data, batch_size, num_steps, shuffle_examples=Tr
         if type(category) is list and type(polarity) is list:
             e = np.asarray([category[indexer[n]][0] for n in list(range(i*batch_size, (i+1)*batch_size))])
             a = np.asarray([category[indexer[n]][1] for n in list(range(i*batch_size, (i+1)*batch_size))])
-            p = np.asarray([polarity[indexer[n]][1] for n in list(range(i*batch_size, (i+1)*batch_size))])
+            p = np.asarray([polarity[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])
             yield (x, y, p, e, a)
         elif type(category) is list:
             e = np.asarray([category[indexer[n]][0] for n in list(range(i*batch_size, (i+1)*batch_size))])

@@ -71,17 +71,22 @@ class shared_Embeddings(object):
         with tf.device("/cpu:0"):
             self._embeddings = tf.get_variable("embedding",
                                               [config.vocab_size, config.embedding_size],
+                                               dtype=data_type(),
                                               trainable=False)
 
             self._inputs = tf.nn.embedding_lookup(self._embeddings, self._input_data)
 
     @property
-    def inputs(self):
-        return self._inputs
+    def source_data(self):
+        return self._input_data
 
     @property
     def embeddings(self):
         return self._embeddings
+
+    @property
+    def inputs(self):
+        return self._inputs
 
 
 class shared_BiRNN(object):
@@ -126,7 +131,7 @@ class slot1_entity_attribute(object):
                                                     config.init_scale)
 
         # target for cross entropy
-        self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot1_classes])
+        self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot1_classes], name="slot1_targets")
 
         rnn_tensor = tf.reduce_mean(rnn_input, 1)
         with tf.variable_scope("softmax_slot1", reuse=None, initializer=initializer):
@@ -224,10 +229,9 @@ class slot1_entity_attribute(object):
 class slot3_polarity(object):
     def __init__(self, is_training, config, rnn_output, embedding):
 
-
         rnn_tensor = tf.reduce_mean(rnn_output, 2)
 
-        self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot3_classes])  # 20 x 13
+        self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot3_classes], name="slot3_targets")  # 20 x 13
 
         initializer = tf.random_uniform_initializer(-config.init_scale,
                                                     config.init_scale)
@@ -343,6 +347,14 @@ class slot3_polarity(object):
     def loss(self):
         return self._loss
 
+    @property
+    def entity_input(self):
+        return self._input_e
+
+    @property
+    def attribute_input(self):
+        return self._input_a
+
 
 class multitask(object):
     """Mult-task config."""
@@ -393,28 +405,30 @@ def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=N
                                          m.merged_summary,
                                         m.slot1_model.optimizer, m.slot3_model.optimizer],
                                        {m.embeddings.inputs: x,
-                                        m.slot1_model.targets: y_1, m.slot3_model.targets: y_3},
+                                        m.slot1_model.targets: y_1, m.slot3_model.targets: y_3,
+                                        m.slot3_model.entity_input: e, m.slot3_model.attribute_input: a},
                                                            options=run_options,
                                                            run_metadata=run_metadata)
         else:
             slot1_cost, slot3_cost, \
-            slot1_loss, slot3_loss, _ = session.run([m.slot1_model.cost, m.slot3_model.cost,
+            slot1_loss, slot3_loss, _, _ = session.run([m.slot1_model.cost, m.slot3_model.cost,
                                                      m.slot1_model.loss, m.slot3_model.loss,
                                                      m.slot1_model.optimizer, m.slot3_model.optimizer],
-                                                    {m.embeddings.inputs: x,
+                                                    {m.embeddings.source_data: x,
+                                                     m.slot3_model.entity_input: e, m.slot3_model.attribute_input: a,
                                                      m.slot1_model.targets: y_1, m.slot3_model.targets: y_3})
 
         if writer:
             writer.add_summary(summary, step)
 
-        costs += cost
-        iters += m.num_steps
+        costs += slot1_cost
+        iters += config.num_steps
         slot1_losses.append(slot1_loss)
         slot3_losses.append(slot3_loss)
 
-        if verbose and iters % (m.batch_size * 5) == 0:
-            print("step %.3f loss : %.6f speed: %.0f wps" %
-                  (step * 1.0 / epoch_size, loss, iters * m.batch_size / (time.time() - start_time)))
+        if verbose and iters % (config.batch_size * 5) == 0:
+            print("step %.3f slot_loss : %.6f slot3_loss: %.6f speed: %.0f wps" %
+                  (step * 1.0 / epoch_size, slot1_loss, slot3_loss, iters * config.batch_size / (time.time() - start_time)))
 
     return np.exp(abs(costs) / iters), slot1_losses, slot3_losses
 
@@ -453,11 +467,11 @@ class slot1_and_slot3_model(object):
 
     @property
     def slot1_model(self):
-        return self._slot1Model
+        return self._slot1_model
 
     @property
     def slot3_model(self):
-        return self._slot3Model
+        return self._slot3_model
 
     @property
     def merged_summary(self):
@@ -516,6 +530,10 @@ def train_task(CONST, data):
 
                 slot1_losses = slot1_losses + [np.mean(slot1_loss)]
                 slot3_losses = slot3_losses + [np.mean(slot3_loss)]
+
+                print("Epoch: %d Avg. Total Mean Loss slot1: %.6f slot3: %" % (i + 1,
+                                                                               np.mean(slot1_losses),
+                                                                               np.mean(slot3_losses)))
 
             # Output Config/Losses
             from util.evaluations import print_config
