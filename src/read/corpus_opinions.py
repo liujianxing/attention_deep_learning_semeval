@@ -33,6 +33,14 @@ except:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from nltk.stem import PorterStemmer
+from nltk.stem import WordNetLemmatizer
+stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
+
+from nltk.tokenize import RegexpTokenizer
+tokenizer = RegexpTokenizer(r'\w+')
+
 # Stopwords, imported from NLTK (v 2.0.4)
 stopwords = set(
     ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves',
@@ -133,7 +141,8 @@ class Aspect:
 class Opinions:
     '''Opinion Object 2015/2016 for SubTask 1 Only'''
     def __init__(self, opinion):
-        self.target = opinion.get('target')
+
+        self.target = opinion.get('target').lower()
         self.entity = opinion.get('category').lower().split('#')[0]
         self.aspect = opinion.get('category').lower().split('#')[1]
         self.category = opinion.get('category').lower()
@@ -189,13 +198,13 @@ class Instance:
         self.aspect_categories.append(c)
 
     def get_vsm(self, c=None):
-        remove_Stop_words = True
-        lemmas, tokens = self.text_to_token_lemmas()
+        remove_Stop_words = False
+        _, tokens = self.text_to_token_lemmas()
         self.uni_grams = [word for word in tokens if
                           not remove_Stop_words or word == "not" or word not in stopwords]
         return
 
-    def to_vsm(self, lemma=False, remove_Stop_words=True, window=-1, buckets=False):
+    def to_vsm(self, lemma=False, remove_Stop_words=False, window=-1, buckets=False):
 
         lemmas, tokens = self.text_to_token_lemmas()
 
@@ -229,11 +238,6 @@ class Instance:
         from nltk.tokenize import RegexpTokenizer
         tokenizer = RegexpTokenizer(r'\w+')
         tokens = tokenizer.tokenize(text)
-
-        from nltk.stem import PorterStemmer
-        from nltk.stem import WordNetLemmatizer
-        stemmer = PorterStemmer()
-        lemmatizer = WordNetLemmatizer()
 
         lemmas = [lemmatizer.lemmatize(stemmer.stem(word)) for word in tokens]
         return lemmas, tokens

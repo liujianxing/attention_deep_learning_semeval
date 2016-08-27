@@ -1,5 +1,7 @@
 import numpy as np
 import read.w2v_loader as w2v
+from nltk.tokenize import RegexpTokenizer
+tokenizer = RegexpTokenizer(r'\w+')
 
 '''
 ['restaurant#general', 'service#general', 'food#quality', 'drinks#style_options', 'restaurant#prices', 'ambience#general', 'restaurant#miscellaneous', 'food#style_options', 'location#general', 'drinks#quality', 'food#prices', 'drinks#prices']
@@ -113,9 +115,17 @@ def sentences_to_x_y_l(all_sentences, ind, max, aspects, c):
             s_[sentiments.index("none")] = 1
         else:
             ea_found = False
+            t_found = False
+            l.append(0)
             for opinion in sentence.aspect_targets:
                 category_index = aspects.index(opinion.category)
                 y_[category_index] = 1
+
+                if not t_found:
+                    if opinion.target and opinion.target.lower() != "null":
+                        target = tokenizer.tokenize(opinion.target.lower())
+                        l[-1] = sentence.uni_grams.index(target[0].lower())
+                        t_found = True
 
                 if not ea_found:
                     a.append([ind[opinion.entity.split('_')[0]], ind[opinion.aspect.split('_')[0]]])
