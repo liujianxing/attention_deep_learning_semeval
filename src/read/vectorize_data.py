@@ -21,7 +21,7 @@ tokenizer = RegexpTokenizer(r'\w+')
  ]
 '''
 
-sentiments = ['positive', 'negative', 'neutral', 'none']
+sentiments = ['positive', 'negative', 'neutral'] #, 'none']
 
 def vectorize_rnn(train_sentences, dev_sentences, test_sentences, c=None):
     print("Vectorizing...")
@@ -106,13 +106,14 @@ def sentences_to_x_y_l(all_sentences, ind, max, aspects, c):
     for sentence in all_sentences:
         # vsm, left_vsm, right_vsm = sentence.get_vsm(center=location_name, config=config)
         y_ = [0] * len(aspects)
-        s_ = [0] * 4
+        s_ = [0] * len(sentiments)
 
         if len(sentence.aspect_targets) < 1:
             category_index = aspects.index("NONE")
             y_[category_index] = 1
             a.append([ind["MISSING"], ind["MISSING"]])
-            s_[sentiments.index("none")] = 1
+            s_[len(sentiments) - 1] = 1
+            l.append(0)
         else:
             ea_found = False
             t_found = False
@@ -132,7 +133,7 @@ def sentences_to_x_y_l(all_sentences, ind, max, aspects, c):
                     ea_found = True
 
                 if not opinion.polarity:
-                    s_[sentiments.index("none")] = 1
+                    s_[len(sentiments)-1] = 1
                 else:
                     s_[sentiments.index(opinion.polarity.lower())] = 1
 

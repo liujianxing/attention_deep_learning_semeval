@@ -1,7 +1,13 @@
 *.pickle
 *.png
 *.meta
+*.zip
+GoogleNews-vectors-negative300*
 checkpoint
 .idea
 .DS_Store
 w2vy.txt
+__pycache__
+loss
+checkpoints
+sentences

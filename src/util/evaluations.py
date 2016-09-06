@@ -25,16 +25,18 @@ def evaluate(p, y, print_it=True):
     precision = precision_score(y, p, average="samples")
     recall = recall_score(y, p, average="weighted")
     f1 = f1_score(y, p, average="weighted")
+    accuracy = accuracy_score(y, p)
 
     if print_it:
         print("F1 Score: ", f1)
         print("Recall: ", recall)
         print("Precision: ", precision)
+        print("Accuracy: ", accuracy)
 
-    return [f1, recall, precision]
+    return [f1, recall, precision, accuracy]
 
 
-def evaluate_multlabel(predictions, y_data, threshold, print_it = True):
+def evaluate_multilabel(predictions, y_data, threshold, print_it = True):
     for pred in predictions:
         pred[pred > threshold] = 1
         pred[pred < threshold] = 0
@@ -82,6 +84,12 @@ def make_loss_graph(CONST):
     plt.savefig("losses_all.png")
     print("all losses plot saved")
 
+def re_evalute_slot3(CONST):
+
+    from util.utils import load_pickle as load
+    birnn = load(CONST.DATA_DIR + "BiRNNslot3" + "_predictions")
+    evaluate_multiclass(birnn["predictions"], birnn["y"], True)
+
 def re_evalute(CONST):
     threshold = float(CONST.THRESHOLD)
 
@@ -108,7 +116,7 @@ def find_best_slot1(name, pred, y):
     thresholds = np.arange(0.04001, 0.20000, 0.001)
     for t in thresholds:
         pred_copy = np.copy(pred)
-        t_result = evaluate(pred_copy, y, t, print_it=False)
+        t_result = evaluate_multilabel(pred_copy, y, t, print_it=False)
 
         if t_result[0] > score:
             score = t_result[0]
@@ -145,3 +153,6 @@ if __name__ == "__main__":
     #make_loss_graph(CONST)
 
     re_evalute(CONST)
+
+    # slot 3
+    re_evalute_slot3(CONST)

@@ -1,13 +1,4 @@
 """
-There are 3 supported model configurations:
-===========================================
-| config | epochs | train | valid  | test
-===========================================
-| small  | 13     | 37.99 | 121.39 | 115.91
-| medium | 39     | 48.45 |  86.16 |  82.07
-| large  | 55     | 37.87 |  82.62 |  78.29
-The exact results may vary depending on the random initialization.
-
 The hyperparameters used in the model:
 - init_scale - the initial scale of the weights
 - learning_rate - the initial value of the learning rate
@@ -105,7 +96,7 @@ class RNNModel(object):
             hidden_size = config.hidden_size * 2 if config.__class__.__name__ == "BiRNN" else config.hidden_size
             softmax_w = tf.get_variable("softmax_w", [hidden_size, config.classes], dtype=data_type())
             softmax_b = tf.get_variable("softmax_b", [config.classes], dtype=data_type())
-            self._logits = tf.matmul(self._output, softmax_w) + softmax_b
+            self._logits = tf.nn.relu(tf.matmul(self._output, softmax_w) + softmax_b)
 
             if config.get_summary:
                 variable_summaries(softmax_w, "linear_classifier_w")
@@ -325,7 +316,7 @@ class BiRNN(object):
     num_steps = 35
     hidden_size = 128
     max_epoch = 25
-    max_max_epoch = 100
+    max_max_epoch = 200
     keep_prob = 0.80
     lr_decay = 1 / 1.15
     batch_size = 20
@@ -437,6 +428,7 @@ def main(CONST, data):
     #   config.num_steps = 1
 
     config.vocab_size = len(data["embeddings"])
+    config.max_max_epoch = CONST.MAX_EPOCH
 
     tf.reset_default_graph()
     # start graph and session
@@ -456,6 +448,11 @@ def main(CONST, data):
 
             tf.initialize_all_variables().run()
             session.run(training_model.embedding.assign(data["embeddings"]))  # train
+
+            # Reload save epoch training time
+            if CONST.RELOAD_TRAIN:
+                saver = tf.train.Saver()
+                saver.restore(sess=session, save_path=CONST.SLOT3_MODEL_PATH + "/slot3")
 
             # if config.__class__.__name__ is not "BiRNN":
             #    training_model.initial_state.eval()
@@ -496,11 +493,14 @@ def main(CONST, data):
 
             import matplotlib.pyplot as plt
             # plt.plot([np.mean(all_losses[i-50:i]) for i in range(len(all_losses))])
+            figure_name = CONST.OUT_DIR + "loss/" + "losses_slot1" + config.__class__.__name__ + ".png"
             x = [i for i in range(len(all_losses))]
             plt.plot(np.array(x), np.array(all_losses))
-            plt.savefig("losses" + config.__class__.__name__ + ".png")
+            plt.savefig(figure_name)
             save_pickle(CONST.DATA_DIR + config.__class__.__name__, all_losses)
             print("saved losses.png and data")
+            print("loss: ", figure_name)
+            print("loss data: ", CONST.DATA_DIR + config.__class__.__name__  + ".pickle")
 
             saver = tf.train.Saver(tf.all_variables())
             path = saver.save(sess=session, save_path=CONST.SLOT1_MODEL_PATH + config.__class__.__name__ + "/slot1")
@@ -539,11 +539,11 @@ def main(CONST, data):
 
                 print_config(config)
 
-                from util.evaluations import evaluate
+                from util.evaluations import evaluate_multilabel
 
                 save_pickle(CONST.DATA_DIR + config.__class__.__name__ + "predictions", {"predictions": predictions, "y": data["y_test"]})
 
-                evaluate(predictions, data["y_test"], CONST.THRESHOLD)
+                evaluate_multilabel(predictions, data["y_test"], CONST.THRESHOLD)
 
                 print("predictions saved")
                 # session.close()  # doesn't seem to close under scope??

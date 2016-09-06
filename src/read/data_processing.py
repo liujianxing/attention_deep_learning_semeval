@@ -1,3 +1,7 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import random
 
 from os import listdir, path
@@ -264,7 +268,10 @@ def read_generated(name):
     return data
 
 
-def semeval_itterator(x_data, y_data, batch_size, num_steps, shuffle_examples=True, category=False, polarity=False):
+def semeval_itterator(x_data, y_data, batch_size, num_steps, shuffle_examples=True, category=False, polarity=False, target=False):
+
+    #assert type(category) is list and type(target) is list, "can not iterate over target and categories"
+
     indexer = list(range(0, len(y_data)))
     data_len = len(indexer)
 
@@ -284,7 +291,14 @@ def semeval_itterator(x_data, y_data, batch_size, num_steps, shuffle_examples=Tr
     for i in range(batch_len):
         x = np.asarray([x_data[indexer[n]][:num_steps] for n in list(range(i*batch_size, (i+1)*batch_size))])
         y = np.asarray([y_data[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])
-        if type(category) is list and type(polarity) is list:
+        if type(target) is list and type(polarity) is list:
+            p = np.asarray([polarity[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])
+            t = np.asarray([target[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])
+            yield (x, y, p, t)
+        elif type(target) is list:
+            t = np.asarray([target[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])
+            yield (x, y, t)
+        elif type(category) is list and type(polarity) is list:
             e = np.asarray([category[indexer[n]][0] for n in list(range(i*batch_size, (i+1)*batch_size))])
             a = np.asarray([category[indexer[n]][1] for n in list(range(i*batch_size, (i+1)*batch_size))])
             p = np.asarray([polarity[indexer[n]] for n in list(range(i*batch_size, (i+1)*batch_size))])

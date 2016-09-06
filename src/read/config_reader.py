@@ -1,7 +1,5 @@
 import configparser
-from read import config_reader as cr, \
-    constants as cs
-
+from read import constants as cs
 
 def get_config(file_name):
     config = configparser.ConfigParser()
@@ -49,6 +47,8 @@ class _Const(object):
         parser.add_argument("-train")
         parser.add_argument("-model")  # GRU, BasicLSTM, BiRNN
         parser.add_argument("-epoch")
+        parser.add_argument("-reload_train")
+        parser.add_argument("-map")
 
         args = parser.parse_args()
 
@@ -58,7 +58,7 @@ class _Const(object):
         if args.conf_name is None:
             args.conf_name = 'semeval_base.conf'
 
-        self.config = cr.get_config(args.conf_dir + args.conf_name)
+        self.config = get_config(args.conf_dir + args.conf_name)
 
         if args.model is not None:
             self.config.set(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_MODEL, args.model)
@@ -99,8 +99,14 @@ class _Const(object):
         if args.train is not None:
             self.config.set(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_TRAIN, args.train)
 
+        if args.reload_train is not None:
+            self.config.set(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_RELOAD_TRAIN, args.reload_train)
+
         if args.epoch is not None:
             self.config.set(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_MAX_EPOCH, args.epoch)
+
+        if args.map is not None:
+            self.config.set(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_HEATMAP, args.map)
 
     @constant
     def DATA_DIR(self):
@@ -236,12 +242,36 @@ class _Const(object):
         return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SAVE_SLOT3)
 
     @constant
+    def SLOT3_TARGET_MODEL_PATH(self):
+        return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SAVE_SLOT3_TARGET)
+
+    @constant
     def MULTITASK_CHECKPOINT_PATH(self):
         return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SAVE_MULTITASK)
 
     @constant
+    def CNN_MODEL_PATH(self):
+        return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SAVE_SLOT3_CNN)
+
+    @constant
+    def MULTITASK_CHECKPOINT_PATH_HURSH(self):
+        return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SAVE_MULTITASK_HURSH)
+
+    @constant
+    def SENTENCE_PATH(self):
+        return self.config.get(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_SENTENCE)
+
+    @constant
     def TRAIN(self):
         return self.config.getboolean(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_TRAIN)
+
+    @constant
+    def RELOAD_TRAIN(self):
+        return self.config.getboolean(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_RELOAD_TRAIN)
+
+    @constant
+    def HEATMAP(self):
+        return self.config.getboolean(cs.CONFIG_SECTION_MODEL, cs.CONFIG_OPTION_HEATMAP)
 
     @constant
     def MAX_EPOCH(self):

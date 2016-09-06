@@ -46,6 +46,13 @@ import datetime
 import argparse
 
 
+tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
+tf.flags.DEFINE_boolean("log_device_placement", False, "Log placement of ops on devices")
+
+session_conf = tf.ConfigProto(
+    allow_soft_placement=FLAGS.allow_soft_placement,
+    log_device_placement=FLAGS.log_device_placement)
+
 def data_type():
     return tf.float16 if FLAGS.use_fp16 else tf.float32
 
@@ -68,13 +75,12 @@ class shared_Embeddings(object):
 
     def __init__(self, config):
         self._input_data = tf.placeholder(tf.int32, [config.batch_size, config.num_steps])  # 20 x 70 x [100]
-        with tf.device("/cpu:0"):
-            self._embeddings = tf.get_variable("embedding",
-                                              [config.vocab_size, config.embedding_size],
-                                               dtype=data_type(),
-                                              trainable=False)
+        self._embeddings = tf.get_variable("embedding",
+                                          [config.vocab_size, config.embedding_size],
+                                           dtype=data_type(),
+                                          trainable=False)
 
-            self._inputs = tf.nn.embedding_lookup(self._embeddings, self._input_data)
+        self._inputs = tf.nn.embedding_lookup(self._embeddings, self._input_data)
 
     @property
     def source_data(self):
@@ -92,16 +98,16 @@ class shared_Embeddings(object):
 class shared_BiRNN(object):
     """shared Multi-task RNN model."""
 
-    def __init__(self, is_training, config, inputs):
+    def __init__(self, is_training, config, inputs, initializer):
         # Need scope for each direction here: https://github.com/tensorflow/tensorflow/issues/799
         with tf.variable_scope('forward_multi'):
-            lstm_fw_cell = tf.nn.rnn_cell.LSTMCell(num_units=config.hidden_size)
+            lstm_fw_cell = tf.nn.rnn_cell.LSTMCell(num_units=config.hidden_size, initializer=initializer)
             lstm_fw_cell = tf.nn.rnn_cell.MultiRNNCell([lstm_fw_cell] * config.num_layers)
             if is_training and config.keep_prob > 0:
                 lstm_fw_cell = tf.nn.rnn_cell.DropoutWrapper(lstm_fw_cell, output_keep_prob=config.keep_prob)
 
         with tf.variable_scope('backward_multi'):
-            lstm_bw_cell = tf.nn.rnn_cell.LSTMCell(num_units=config.hidden_size)
+            lstm_bw_cell = tf.nn.rnn_cell.LSTMCell(num_units=config.hidden_size, initializer=initializer)
             lstm_bw_cell = tf.nn.rnn_cell.MultiRNNCell([lstm_bw_cell] * config.num_layers)
             if is_training and config.keep_prob > 0:
                 lstm_bw_cell = tf.nn.rnn_cell.DropoutWrapper(lstm_bw_cell, output_keep_prob=config.keep_prob)
@@ -113,8 +119,8 @@ class shared_BiRNN(object):
 
         self._output, _, _ = tf.nn.bidirectional_rnn(lstm_fw_cell,
                                                     lstm_bw_cell,
-                                                    inputs,
-                                                    dtype=tf.float32)
+                                                        inputs,
+                                                        dtype=tf.float32)
 
     @property
     def cells(self):
@@ -126,15 +132,13 @@ class shared_BiRNN(object):
 
 
 class slot1_entity_attribute(object):
-    def __init__(self, is_training, config, rnn_input):
-        initializer = tf.random_uniform_initializer(-config.init_scale,
-                                                    config.init_scale)
+    def __init__(self, is_training, config, rnn_input, initializer):
 
         # target for cross entropy
         self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot1_classes], name="slot1_targets")
 
-        rnn_tensor = tf.reduce_mean(rnn_input, 1)
-        with tf.variable_scope("softmax_slot1", reuse=None, initializer=initializer):
+        with tf.variable_scope("tanh_linear", initializer=initializer):
+            rnn_tensor = tf.reduce_mean(rnn_input, 1)
             softmax_w = tf.get_variable("softmax_w", [config.hidden_size * 2, config.slot1_classes], dtype=data_type())
             softmax_b = tf.get_variable("softmax_b", [config.slot1_classes], dtype=data_type())
             self._logits = tf.matmul(rnn_tensor, softmax_w) + softmax_b
@@ -142,26 +146,27 @@ class slot1_entity_attribute(object):
             if config.get_summary:
                 variable_summaries(softmax_w, "linear_classifier_w")
                 variable_summaries(softmax_b, "linear_classifier_b")
+                variable_summaries(self._logits, "slot1_tanh_logit")
             # weighted_cross_entropy_with_logits
             loss = tf.nn.weighted_cross_entropy_with_logits(self._logits,
                                                             tf.to_float(self._targets), 0.8)
 
             self._loss = tf.reduce_mean(loss)
 
-            if config.get_summary:
-                tf.scalar_summary('cross entropy', self._loss)
             self._cost = cost = tf.reduce_sum(self._loss) / config.batch_size
 
             self._predictions = tf.nn.softmax(self.logits)
+
+            if config.get_summary:
+                tf.scalar_summary('cross entropy slot1', self._loss)
+                variable_summaries(self._cost, "slot1_cost")
+                variable_summaries(self._predictions, "slot1_predictions")
 
             self._init_op = tf.initialize_all_variables()
 
             # No need for gradients if not training
             if not is_training:
                 return
-
-            if config.get_summary:
-                self._merged_summary = tf.merge_all_summaries()
 
             # Optimizer.
             global_step = tf.Variable(0)
@@ -206,10 +211,6 @@ class slot1_entity_attribute(object):
         return self._train_op
 
     @property
-    def merged_summary(self):
-        return self._merged_summary
-
-    @property
     def output(self):
         return self._output
 
@@ -227,77 +228,92 @@ class slot1_entity_attribute(object):
 
 
 class slot3_polarity(object):
-    def __init__(self, is_training, config, rnn_output, embedding):
 
-        rnn_tensor = tf.reduce_mean(rnn_output, 2)
+    def __init__(self, is_training, config, rnn_output, initializer):
 
         self._targets = tf.placeholder(tf.int32, [config.batch_size, config.slot3_classes], name="slot3_targets")  # 20 x 13
 
-        initializer = tf.random_uniform_initializer(-config.init_scale,
-                                                    config.init_scale)
-        # Apply attention
-        with tf.variable_scope("attention", initializer=initializer, reuse=None):
+        with tf.variable_scope("attention", initializer=initializer):
+            self._context_v = tf.get_variable("context", [config.batch_size, config.batch_size * config.hidden_size * 2] ,dtype=data_type())
+            # just for alphas
+            if config.get_summary:
+                variable_summaries(self._context_v, "context_attention")
+            self._alpha = tf.nn.softmax(tf.matmul(self._context_v, tf.reshape(rnn_output, [-1, config.num_steps])))
 
-            w_et = tf.get_variable("w_et", [config.batch_size, config.embedding_size], dtype=data_type())
-            w_at = tf.get_variable("w_at", [config.batch_size, config.embedding_size], dtype=data_type())
+            if is_training:
+                wt = tf.get_variable("w_et", [config.hidden_size * 2, config.batch_size * config.hidden_size * 2], dtype=data_type())
 
-            self._input_e = tf.placeholder(tf.int32, [config.batch_size])
-            self._input_a = tf.placeholder(tf.int32, [config.batch_size])
+                self._input_t = tf.placeholder(tf.int32, [config.batch_size])
 
-            v_entities = tf.nn.embedding_lookup(embedding, self._input_e)
-            v_aspects = tf.nn.embedding_lookup(embedding, self._input_a)
+                h_source = [tf.slice(rnn_output, [i, self._input_t[i], 0], [1, 1, config.hidden_size*2]) for i in range(config.batch_size)]
 
-            e_t = tf.matmul(tf.matmul(tf.squeeze(v_entities), tf.transpose(w_et)), rnn_tensor)
-            a_t = tf.matmul(tf.matmul(tf.squeeze(v_aspects), tf.transpose(w_at)), rnn_tensor)
+                h_source = tf.squeeze(h_source)
 
-            self.entity_attention = tf.nn.softmax(e_t, name="entity_attention")
-            self.aspects_attention = tf.nn.softmax(a_t, name="aspect_attention")
+                score = tf.matmul(h_source, wt)
 
-            r_attention = tf.concat(1, [tf.matmul(self.entity_attention, rnn_tensor, transpose_b=True),
-                                        tf.matmul(self.aspects_attention, rnn_tensor, transpose_b=True)])
+                # Permuting batch_size and n_steps
+                x = tf.transpose(rnn_output, [0, 2, 1])
+                # Reshape to (n_steps*batch_size, n_input)
+                x = tf.reshape(x, [-1, config.num_steps])
+                # Split to get a list of 'n_steps' tensors of shape (batch_size, n_input)
+                score = tf.matmul(score, x)
+                alpha_t = tf.nn.softmax(score)
 
-        with tf.variable_scope("softmax_slot3", reuse=None, initializer=initializer):
-            softmax_w = tf.get_variable("softmax_w", [config.batch_size * 2, config.slot3_classes], dtype=data_type())
-            softmax_b = tf.get_variable("softmax_b", [config.slot3_classes], dtype=data_type())
-            self._logits = tf.matmul(r_attention, softmax_w) + softmax_b
+                self._context_v = tf.assign(self._context_v, tf.matmul(alpha_t, tf.reshape(rnn_output, [config.num_steps, -1])))
+
+            with tf.variable_scope("softmax", initializer=initializer):
+                # and tf.control_dependencies([self.embedding, self.output, inputs]):
+                #softmax_w = tf.get_variable("softmax_w", [config.hidden_size*2*config.batch_size, config.slot3_classes], dtype=data_type())
+                #softmax_b = tf.get_variable("softmax_b", [config.slot3_classes], dtype=data_type())
+                #self._logits = tf.matmul(self._context_v, softmax_w) + softmax_b
+                cO_w = tf.get_variable("cO_w", [config.batch_size * config.hidden_size*2, config.num_steps*config.hidden_size*2], dtype=data_type())
+                cO_w = tf.matmul(self._context_v,cO_w)
+                out_con = tf.concat(1,[tf.reshape(rnn_output,[config.batch_size,-1]),cO_w])
+                softmax_w = tf.get_variable("softmax_w", [config.hidden_size*4*config.num_steps, config.slot3_classes], dtype=data_type())
+                softmax_b = tf.get_variable("_b", [config.slot3_classes], dtype=data_type())
+                #self._logits = tf.nn.tanh(tf.matmul(self._context_v, softmax_w) + softmax_b)
+                self._logits = tf.nn.tanh(tf.matmul(out_con, softmax_w) + softmax_b)
+
 
             if config.get_summary:
-                variable_summaries(softmax_w, "linear_classifier_w")
-                variable_summaries(softmax_b, "linear_classifier_b")
+                variable_summaries(softmax_w, "slot3_linear_classifier_w")
+                variable_summaries(softmax_b, "slot3_linear_classifier_b")
 
             # target is valid distribution, is one hot ok on multi-class?
+            #loss = tf.nn.softmax_cross_entropy_with_logits(self._logits,
+            #                                               tf.nn.softmax(tf.to_float(self._targets)))
+
             loss = tf.nn.softmax_cross_entropy_with_logits(self._logits,
-                                                           tf.to_float(self._targets))
+                                                            tf.to_float(self._targets))
 
             self._loss = tf.reduce_mean(loss)
             if config.get_summary:
-                tf.scalar_summary('cross entropy', self._loss)
+                tf.scalar_summary('cross entropy slot3', self._loss)
             self._cost = cost = tf.reduce_sum(self._loss) / config.batch_size
 
             self._predictions = tf.nn.softmax(self.logits)
 
             self._init_op = tf.initialize_all_variables()
 
-            if config.get_summary:
-                self._merged_summary = tf.merge_all_summaries()
-
             # No need for gradients if not training
             if not is_training:
                 return
 
             # Optimizer.
-            global_step = tf.Variable(0)
-            learning_rate = tf.train.exponential_decay(10.0,
+            global_step = tf.Variable(0, trainable=False)
+            learning_rate = tf.train.exponential_decay(config.learning_rate,
                                                        global_step,
                                                        5000,
                                                        0.1,
                                                        staircase=True)
-            self._lr = learning_rate
-            optimizer = tf.train.GradientDescentOptimizer(learning_rate)
-            gradients, v = zip(*optimizer.compute_gradients(loss))
+            reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            reg_constant = 0.01  # Choose an appropriate one.
+            reg_loss = self._loss + reg_constant * sum(reg_losses)
+            optimizer = tf.train.AdadeltaOptimizer(config.learning_rate)
+            gradients, v = zip(*optimizer.compute_gradients(reg_loss))
             gradients, _ = tf.clip_by_global_norm(gradients, 5)
-            self._optimizer = optimizer.apply_gradients(zip(gradients, v),
-                                                        global_step=global_step)
+            self._optimizer = optimizer.apply_gradients(zip(gradients, v))
+
 
     @property
     def optimizer(self):
@@ -328,10 +344,6 @@ class slot3_polarity(object):
         return self._train_op
 
     @property
-    def merged_summary(self):
-        return self._merged_summary
-
-    @property
     def output(self):
         return self._output
 
@@ -348,30 +360,29 @@ class slot3_polarity(object):
         return self._loss
 
     @property
-    def entity_input(self):
-        return self._input_e
+    def input_t(self):
+        return self._input_t
 
     @property
-    def attribute_input(self):
-        return self._input_a
-
+    def alpha(self):
+        return self._alpha
 
 class multitask(object):
     """Mult-task config."""
     init_scale = 0.1
-    learning_rate = 1.0
+    learning_rate = .0017
     max_grad_norm = 10
     num_layers = 2
-    num_steps = 35
+    num_steps = 12
     hidden_size = 128
     # max_epoch = 25
     max_max_epoch = 1
     keep_prob = 0.80
     lr_decay = 1 / 1.15
-    batch_size = 20
+    batch_size = 10
     vocab_size = 10000
     slot1_classes = 13
-    slot3_classes = 4
+    slot3_classes = 3
     input_size = 100
     embedding_size = 100
     max_sequence = 70
@@ -379,7 +390,7 @@ class multitask(object):
 
 
 def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=None, run_metadata=None, verbose=False,
-              category=False, config=False):
+              category=False, config=False, target=None):
     epoch_size = ((len(x_data) // config.batch_size) - 1) // config.num_steps
     start_time = time.time()
     costs = 0.0
@@ -389,12 +400,13 @@ def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=N
 
     slot1_losses = []
     slot3_losses = []
+    merged = tf.merge_all_summaries()
 
-    for step, (x, y_1, y_3, e, a) in enumerate(semeval_itterator(x_data,
+    for step, (x, y_1, y_3, t) in enumerate(semeval_itterator(x_data,
                                                                  y_data,
                                                                  config.batch_size,
                                                                  config.num_steps,
-                                                                 category=category,
+                                                                 target=target,
                                                                  polarity=y_polarity)):
         if writer:
 
@@ -402,11 +414,11 @@ def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=N
             slot1_loss, slot3_loss, \
             summary, _, _ = session.run([m.slot1_model.cost, m.slot3_model.cost,
                                          m.slot1_model.loss, m.slot3_model.loss,
-                                         m.merged_summary,
+                                         merged,
                                         m.slot1_model.optimizer, m.slot3_model.optimizer],
-                                       {m.embeddings.inputs: x,
+                                       {m.embeddings.source_data: x,
                                         m.slot1_model.targets: y_1, m.slot3_model.targets: y_3,
-                                        m.slot3_model.entity_input: e, m.slot3_model.attribute_input: a},
+                                        m.slot3_model.input_t: t},
                                                            options=run_options,
                                                            run_metadata=run_metadata)
         else:
@@ -415,10 +427,11 @@ def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=N
                                                      m.slot1_model.loss, m.slot3_model.loss,
                                                      m.slot1_model.optimizer, m.slot3_model.optimizer],
                                                     {m.embeddings.source_data: x,
-                                                     m.slot3_model.entity_input: e, m.slot3_model.attribute_input: a,
+                                                     m.slot3_model.input_t: t,
                                                      m.slot1_model.targets: y_1, m.slot3_model.targets: y_3})
 
         if writer:
+            writer.add_run_metadata(run_metadata, 'step%d' % step)
             writer.add_summary(summary, step)
 
         costs += slot1_cost
@@ -435,27 +448,31 @@ def run_epoch(session, m, x_data, y_data, y_polarity, writer=None, run_options=N
 
 class slot1_and_slot3_model(object):
     def __init__(self, is_training, config):
-        if config.get_summary:
-            self._merged_summary = tf.merge_all_summaries()
+
         self._embeddings = shared_Embeddings(config)
+
+        initializer = tf.random_uniform_initializer(-config.init_scale,
+                                                    config.init_scale)
         self._rnn_output = shared_BiRNN(is_training,
                                         config,
-                                        inputs=self._embeddings.inputs)
+                                        inputs=self._embeddings.inputs, initializer=initializer)
+
 
         """
             Both Slot1 and Slot3 Models share BiRNN above Representations
         """
 
         # Slot1 Model
-        self._slot1_model = slot1_entity_attribute(is_training,
-                                                   config,
-                                                   self._rnn_output.output)
+        with tf.name_scope("slot1_EA"):
+            self._slot1_model = slot1_entity_attribute(is_training,
+                                                       config,
+                                                       self._rnn_output.output, initializer=initializer)
 
         # Slot 3 Model
-        self._slot3_model = slot3_polarity(is_training,
-                                           config,
-                                           self._rnn_output.output,
-                                           self._embeddings.embeddings)
+        with tf.name_scope("slot3_Sentiment"):
+            self._slot3_model = slot3_polarity(is_training,
+                                               config,
+                                               self._rnn_output.output, initializer=initializer)
 
     @property
     def embeddings(self):
@@ -482,33 +499,36 @@ def train_task(CONST, data):
     config = multitask()
 
     config.vocab_size = len(data["embeddings"])
+    config.max_max_epoch = CONST.MAX_EPOCH
 
     tf.reset_default_graph()
 
-    with tf.Graph().as_default(), tf.Session() as session:
+    with tf.Graph().as_default(), tf.Session(config=session_conf) as session:
 
         with tf.variable_scope("model", reuse=None, initializer=tf.contrib.layers.xavier_initializer()):
-            training_model = slot1_and_slot3_model(is_training=True, config=config)  # model class
+            training_model = slot1_and_slot3_model(is_training=CONST.TRAIN, config=config)  # model class
 
         if CONST.TRAIN:
             tf.initialize_all_variables().run()
 
             # Check if Model is Saved and then Load
-            if check_saved_file(CONST.MULTITASK_CHECKPOINT_PATH + "checkpoint"):
+            if CONST.RELOAD_TRAIN:
                 saver = tf.train.Saver()
-                saver.restore(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH)
+                print("CHECKPATH",CONST.MULTITASK_CHECKPOINT_PATH_HURSH + "task")
+                saver.restore(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH_HURSH + "task")
 
             session.run(training_model.embeddings.embeddings.assign(data["embeddings"]))  # train
 
             slot1_losses = []
             slot3_losses = []
+            slot4_losses = []
 
             train_writer = run_metadata = run_options = False
 
             if config.get_summary:
                 # session = tf.InteractiveSession()
                 train_writer = tf.train.SummaryWriter(
-                    CONST.SLOT1_MODEL_PATH + "attention_graph/" + config.__class__.__name__,
+                    CONST.MULTITASK_CHECKPOINT_PATH_HURSH + "attention_graph/" + config.__class__.__name__,
                     session.graph)
 
                 run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -524,7 +544,7 @@ def train_task(CONST, data):
                                                                      train_writer,
                                                                      run_options,
                                                                      run_metadata,
-                                                                     category=data["a_train"],
+                                                                     target=data["l_train"],
                                                                      verbose=True,
                                                                      config=config)
 
@@ -535,80 +555,121 @@ def train_task(CONST, data):
                                                                                np.mean(slot1_losses),
                                                                                np.mean(slot3_losses)))
 
+
+
             # Output Config/Losses
             from util.evaluations import print_config
             print_config(config)
 
-            # Save CheckPoint
-            saver = tf.train.Saver(tf.all_variables())
-            path = saver.save(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH)
-            print("model saved: " + path)
 
             # Save Losses for Later
             loss = {"slot1": slot1_losses, "slot3": slot3_losses}
             save_pickle(CONST.DATA_DIR + config.__class__.__name__ + "multi_task", loss)
 
+            # Save CheckPoint
+            saver = tf.train.Saver(tf.all_variables())
+            path = saver.save(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH_HURSH + "task")
+            print("model saved: " + path)
+
+            if config.get_summary:
+                train_writer.close()
+
+            session.close()
+
+            # doesn't seem to close under scope??
             # Try and plot the losses
+            import matplotlib
+            matplotlib.use('Agg')
             import matplotlib.pyplot as plt
             x = [i for i in range(len(slot1_losses))]
             plt.plot(np.array(x), np.array(slot1_losses))
             plt.plot(np.array(x), np.array(slot3_losses))
+            plt.legend(['slot1', 'slot3'], loc='upper right')
             plt.savefig("losses_" + config.__class__.__name__ + ".png")
 
         if not CONST.TRAIN:
             with tf.variable_scope("model", reuse=True):  # reuse scope to evaluate model
-                validation_model = slot1_and_slot3_model(is_training=True, config=config)  # model class
+                #validation_model = slot1_and_slot3_model(is_training=False, config=config)  # model class
 
-                session.run(validation_model.embeddings.embeddings.assign(data["embeddings"]))  # load embeddings
+                session.run(training_model.embeddings.embeddings.assign(data["embeddings"]))  # load embeddings
 
                 saver = tf.train.Saver()
-                saver.restore(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH)
+                saver.restore(sess=session, save_path=CONST.MULTITASK_CHECKPOINT_PATH_HURSH + "task")
 
                 slot1_predictions = []
                 slot3_predictions = []
+                alphas = []
 
                 # Get Predictions
-                for step, (x, y_1, y_3, e, a) in enumerate(semeval_itterator(data["x_test"],
+                for step, (x, y_1, y_3, t) in enumerate(semeval_itterator(data["x_test"],
                                                                              data["y_test"],
                                                                              config.batch_size,
                                                                              config.num_steps,
-                                                                             category=data["aspects"],
-                                                                             polarity=data["p_test"])):
+                                                                             target=data["l_test"],
+                                                                             polarity=data["p_test"],
+                                                                            shuffle_examples=False)):
+                    if CONST.HEATMAP:
 
-                    slot1_prediction, slot3_prediction = session.run([validation_model.slot1_model.predictions,
-                                                                      validation_model.slot3_model.predicitions],
-                                                                     {validation_model.input_data: x,
-                                                                      validation_model.targets: y,
-                                                                      validation_model.input_e: e,
-                                                                      validation_model.input_a: a})
+                       alpha = session.run([training_model.slot3_model.alpha],
+                                           {training_model.embeddings.source_data: x,
+                                            training_model.slot1_model.targets: y_1,
+                                            training_model.slot3_model.targets: y_3})
 
-                    slot1_predictions = slot1_predictions + slot1_prediction.tolist()
-                    slot3_predictions = slot3_predictions + slot3_prediction.tolist()
+                       alphas = alphas + alpha[0].tolist()
 
-                even_batch = len(data["x_test"]) % config.batch_size
-                remove_added_batch = config.batch_size - even_batch
+                    else:
+                        slot1_prediction, slot3_prediction = session.run([training_model.slot1_model.predictions,
+                                                                          training_model.slot3_model.predictions],
+                                                                         {training_model.embeddings.source_data: x,
+                                                                          training_model.slot1_model.targets: y_1,
+                                                                          training_model.slot3_model.targets: y_3})
 
-                del slot1_predictions[-remove_added_batch:]
-                del slot3_predictions[-remove_added_batch:]
+                        slot1_predictions = slot1_predictions + slot1_prediction.tolist()
+                        slot3_predictions = slot3_predictions + slot3_prediction.tolist()
 
-                slot1_predictions = np.asarray(slot1_predictions)
-                slot3_predictions = np.asarray(slot3_predictions)
+                if not CONST.HEATMAP:
+                    even_batch = len(data["x_test"]) % config.batch_size
+                    remove_added_batch = config.batch_size - even_batch
 
-                # print congiuration for test predictions
-                from util.evaluations import print_config
-                print_config(config)
+                    del slot1_predictions[-remove_added_batch:]
+                    del slot3_predictions[-remove_added_batch:]
 
-                # save predictions
-                predictions = {"slot1": slot1_predictions, "slot3": slot3_predictions,
-                               "slot1_y": data["y_test"], "slot3_y": data["p_test"]}
-                save_pickle(CONST.DATA_DIR + config.__class__.__name__ + "_predictions",
-                            predictions)
-                print("predictions saved to file ", CONST.DATA_DIR + config.__class__.__name__ + "_predictions")
+                    slot1_predictions = [np.asarray(x) for x in slot1_predictions]
+                    slot3_predictions = [np.asarray(x) for x in slot3_predictions]
 
-                from util.evaluations import evaluate_multilabel
-                from util.evaluations import evaluate_multiclass
-                evaluate_multilabel(predictions.slot1, predictions.slot1_y, CONST.THRESHOLD)
-                evaluate_multiclass(predictions.slot3, predictions.slot3_y, True)
+                    # print congiuration for test predictions
+                    from util.evaluations import print_config
+                    print_config(config)
+
+                    slot3_y = [np.asarray(x) for x in data["p_test"]]
+                    # save predictions
+                    predictions = {"slot1": slot1_predictions, "slot3": slot3_predictions,
+                                   "slot1_y": data["y_test"], "slot3_y": slot3_y}
+                    save_pickle(CONST.DATA_DIR + config.__class__.__name__ + "_predictions",
+                                predictions)
+                    print("predictions saved to file ", CONST.DATA_DIR + config.__class__.__name__ + "_predictions")
+
+                    from util.evaluations import evaluate_multilabel
+                    from util.evaluations import evaluate_multiclass
+                    from util.evaluations import find_best_slot1
+                    # evaluate_multilabel(predictions["slot1"], predictions["slot1_y"], CONST.THRESHOLD)
+
+                    print("\nslot3 sentiment ...\n")
+                    evaluate_multiclass(np.asarray(predictions["slot3"]), predictions["slot3_y"], True)
+
+                    print("\nfinding best threshold slot1 E\A pairs...\n")
+                    find_best_slot1("multitask_hursh", np.asarray(predictions["slot1"]), predictions["slot1_y"])
+                elif CONST.HEATMAP:
+                    even_batch = len(data["x_test"]) % config.batch_size
+                    remove_added_batch = config.batch_size - even_batch
+
+                    del alphas[-remove_added_batch:]
+                    distance = 0
+                    sentences = data["test_sentences"]
+                    print("computing heatmaps and avg distance...")
+                    from util.heatmap import avg_distance_and_heatmaps
+                    avg_distance_and_heatmaps(alphas, sentences, CONST.SENTENCE_PATH + "/hursh_multitask")
+
 
 
 if __name__ == "__main__":
@@ -621,5 +682,4 @@ if __name__ == "__main__":
 
     data = load(CONST.DATA_DIR + CONST.DATA_FILE)
 
-    if CONST.TRAIN:
-        train_task(CONST, data)
+    train_task(CONST, data)

@@ -1,13 +1,4 @@
 """
-There are 3 supported model configurations:
-===========================================
-| config | epochs | train | valid  | test
-===========================================
-| small  | 13     | 37.99 | 121.39 | 115.91
-| medium | 39     | 48.45 |  86.16 |  82.07
-| large  | 55     | 37.87 |  82.62 |  78.29
-The exact results may vary depending on the random initialization.
-
 The hyperparameters used in the model:
 - init_scale - the initial scale of the weights
 - learning_rate - the initial value of the learning rate
@@ -135,9 +126,16 @@ class RNNModel(object):
 
         with tf.variable_scope("softmax", reuse=None, initializer=initializer):
             # and tf.control_dependencies([self.embedding, self.output, inputs]):
-            softmax_w = tf.get_variable("softmax_w", [config.hidden_size*2*config.batch_size, config.classes], dtype=data_type())
-            softmax_b = tf.get_variable("softmax_b", [config.classes], dtype=data_type())
-            self._logits = tf.matmul(self._context_v, softmax_w) + softmax_b
+            #softmax_w = tf.get_variable("softmax_w", [config.hidden_size*2*config.batch_size, config.classes], dtype=data_type())
+            #softmax_b = tf.get_variable("softmax_b", [config.classes], dtype=data_type())
+            #self._logits = tf.nn.tanh(tf.matmul(self._context_v, softmax_w) + softmax_b)
+            cO_w = tf.get_variable("cO_w", [config.batch_size * config.hidden_size*2, config.num_steps*config.hidden_size*2], dtype=data_type())
+            cO_w = tf.matmul(self._context_v,cO_w)
+            out_con = tf.concat(1,[tf.reshape(self._output,[config.batch_size,-1]),cO_w])
+            softmax_w = tf.get_variable("softmax_w", [config.hidden_size*4*config.num_steps, config.classes], dtype=data_type())
+            softmax_b = tf.get_variable("_b", [config.classes], dtype=data_type())
+            #self._logits = tf.nn.tanh(tf.matmul(self._context_v, softmax_w) + softmax_b)
+            self._logits = tf.nn.tanh(tf.matmul(out_con, softmax_w) + softmax_b)
 
             self._predictions = tf.nn.softmax(self.logits)
 
@@ -148,8 +146,11 @@ class RNNModel(object):
             # target is valid distribution, is one hot ok on multi-class?
             #loss = tf.nn.softmax_cross_entropy_with_logits(self._logits,
             #                                               tf.nn.softmax(tf.to_float(self._targets)))
-            loss = tf.nn.weighted_cross_entropy_with_logits(self._logits,
-                                                            tf.to_float(self._targets), 0.8)
+            # No need for gradients if not training
+            if not is_training:
+                return
+            loss = tf.nn.softmax_cross_entropy_with_logits(self._logits,
+                                                            tf.to_float(self._targets))
 
             self._loss = tf.reduce_mean(loss)
             if config.get_summary:
@@ -158,62 +159,32 @@ class RNNModel(object):
 
             self._init_op = tf.initialize_all_variables()
 
-            if config.get_summary:
-                self._merged_summary = tf.merge_all_summaries()
+            #if config.get_summary:
+            #    self._merged_summary = tf.merge_all_summaries()
 
-            # No need for gradients if not training
-            if not is_training:
-                return
 
             # Optimizer.
             global_step = tf.Variable(0, trainable=False)
             learning_rate = tf.train.exponential_decay(config.learning_rate,
                                                         global_step,
                                                         1000,
-                                                        0.1,
+                                                        0.9,
                                                         staircase=True)
-            self._lr = learning_rate
-            reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-            reg_constant = 0.01  # Choose an appropriate one.
-            reg_loss = self._loss + reg_constant * sum(reg_losses)
-            optimizer = tf.train.AdadeltaOptimizer(config.learning_rate)
+            #self._lr = learning_rate
+            #reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            #reg_constant = 0.01  # Choose an appropriate one.
+            #reg_loss = self._loss + reg_constant * sum(reg_losses)
+            #optimizer = tf.train.AdamOptimizer(config.learning_rate)
             #optimizer = tf.train.GradientDescentOptimizer(config.learning_rate)
-            gradients, v = zip(*optimizer.compute_gradients(reg_loss))
-            gradients, _ = tf.clip_by_global_norm(gradients, config.max_grad_norm)
+            #gradients, v = zip(*optimizer.compute_gradients(self._loss))
+            #gradients, _ = tf.clip_by_global_norm(gradients, 5)
             #self.optimizer = optimizer.apply_gradients(zip(gradients, v),
                                                        #global_step=global_step)
-            self.optimizer = optimizer.apply_gradients(zip(gradients, v), global_step=global_step)
+            #self._optimizer = optimizer.apply_gradients(zip(gradients, v)) #, global_step=global_step)
 
-    def apply_attention(self, inputs, rep, vec, seq_length):
-        """
-        :param inputs: list of (seq_len) batch_size x input_size
-        :param rep: input_size
-        :param input_size:  usually size of the state
-        :param hidden_size: scores size
-        :param seq_length: length of the sequence
-        :return: output: batch_size x input_size
-                 weights: alphas: list of (seq_len) batch_size x 1
-        """
-        with tf.variable_scope("attention"):
-            tf.get_variable_scope().reuse_variables()
-
-            # seq_len x batch_size x input_size
-            scores = [tf.nn.tanh(tf.matmul(inputs[i], tf.transpose(rep))) for i in range(seq_length)]
-            # batch_size x seq_len
-            pre_activations = tf.concat(1, scores)
-            # batch_size x seq_len
-            activation = tf.nn.softmax(pre_activations)
-            # seq_len x batch_size x 1
-            weights = tf.split(1, seq_length, activation)
-            # seq_len x batch_size x input_size
-            weighted_inputs = [tf.mul(inputs[i], weights[i]) for i in range(seq_length)]
-            # batch_size x input_size
-            output = tf.add_n(weighted_inputs)
-            alphas = tf.concat(1, weights)
-        return output, alphas
+            self._optimizer = tf.train.AdamOptimizer(learning_rate=config.learning_rate).minimize(self._loss)
 
     def getRNNCell(self, config, inputs, initializer, is_training):
-
 
         # Need scope for each direction here: https://github.com/tensorflow/tensorflow/issues/799
         with tf.variable_scope('forward_multi'):
@@ -294,18 +265,22 @@ class RNNModel(object):
     def alpha(self):
         return self._alpha
 
+    @property
+    def optimizer(self):
+        return self._optimizer
+
 class BiRNN(object):
     """Large config."""
-    init_scale = 0.1
-    learning_rate = 0.0017
+    init_scale = 5.1
+    learning_rate = 0.1
     max_grad_norm = 5
-    num_layers = 1
+    num_layers = 2
     num_steps = 46
-    hidden_size = 128
-    max_max_epoch = 20
-    keep_prob = 0.90
+    hidden_size = 64
+    max_max_epoch = 10
+    keep_prob = 0.50
     lr_decay = 1 / 1.15
-    batch_size = 50
+    batch_size = 12
     vocab_size = 10000
     classes = 3
     input_size = 100
@@ -332,7 +307,7 @@ def run_epoch(session, m, x_data, y_data, writer=None, run_options=None, run_met
     prev_cost = 0.0
 
     losses = []
-
+    merged = tf.merge_all_summaries()
     for step, (x, y, t) in enumerate(semeval_itterator(x_data,
                                                     y_data,
                                                     m.batch_size,
@@ -342,7 +317,7 @@ def run_epoch(session, m, x_data, y_data, writer=None, run_options=None, run_met
         # break
 
         if writer:
-            cost, loss, state, summary, _ = session.run([m.cost, m.loss, m.merged_summary, m.optimizer],
+            cost, loss, summary, _ = session.run([m.cost, m.loss, merged, m.optimizer],
                                                         {m.input_data: x,
                                                          m.targets: y,
                                                          m.input_t: t},
@@ -356,6 +331,7 @@ def run_epoch(session, m, x_data, y_data, writer=None, run_options=None, run_met
 
         # writer.add_run_metadata(run_metadata, 'step%03d' % step)
         if writer:
+            writer.add_run_metadata(run_metadata, 'step%d' % step)
             writer.add_summary(summary, step)
 
         delta_cost = abs(cost - prev_cost)
@@ -417,8 +393,7 @@ def main(CONST, data):
             if config.get_summary:
                 # session = tf.InteractiveSession()
                 train_writer = tf.train.SummaryWriter(
-                    CONST.SLOT1_MODEL_PATH + "attention_graph/" + config.__class__.__name__,
-                    session.graph)
+                    CONST.SLOT3_TARGET_MODEL_PATH + "attention_graph/slot3_target", session.graph)
 
                 run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                 run_metadata = tf.RunMetadata()
@@ -469,9 +444,6 @@ def main(CONST, data):
 
                 #config.batch_size = len(data["x_test"])
 
-                # Initialize Model Graph
-                validation_model = RNNModel(is_training=False, config=config)
-
                 # tf.initialize_all_variables().run()
                 # set embeddings again
                 session.run(training_model.embedding.assign(data["embeddings"]))
@@ -479,6 +451,9 @@ def main(CONST, data):
                 # Load Data Back Trained Model
                 saver = tf.train.Saver()
                 saver.restore(sess=session, save_path=CONST.SLOT3_TARGET_MODEL_PATH + "slot3_target")
+
+                # Initialize Model Graph
+                validation_model = RNNModel(is_training=False, config=config)
 
                 predictions = []
                 alphas = []
